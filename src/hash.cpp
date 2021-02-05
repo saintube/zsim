@@ -174,4 +174,292 @@ uint64_t SHA1HashFamily::hash(uint32_t id, uint64_t val) {
     return 0;
 }
 
+Qarma64HashFamily::Qarma64HashFamily(unsigned mask) {
+    setMask = mask;
+}
+
+void Qarma64HashFamily::text2cell(cell_t* cell, uint64_t is) {
+    // for 64 bits
+    char* byte_ptr = (char*)&is;
+    for (int i = 0; i < MAX_LENGTH / 8; i++) {
+        char byte = byte_ptr[i];
+        cell[2 * (7 - i) + 0] = (byte & 0xF0) >> 4;
+        cell[2 * (7 - i) + 1] = byte & 0xF;
+    }
+}
+
+uint64_t Qarma64HashFamily::cell2text(cell_t* cell) {
+    uint64_t is = 0;
+    for (int i = 0; i < MAX_LENGTH / 8; i++) {
+        uint64_t byte = 0;
+        byte = (cell[2 * i] << 4) | cell[2 * i + 1];
+        is = is | (byte << (7 - i) * 8UL);
+    }
+    return is;
+}
+
+uint64_t Qarma64HashFamily::pseudo_reflect(uint64_t is, uint64_t tk) {
+    cell_t cell[16];
+    text2cell(cell, is);
+
+    // ShuffleCells
+    cell_t perm[16];
+    for (int i = 0; i < 16; i++)
+        perm[i] = cell[t[i]];
+
+    // MixColumns
+    for (int x = 0; x < 4; x++) {
+        for (int y = 0; y < 4; y++) {
+            cell_t temp = 0;
+            for (int j = 0; j < 4; j++) {
+                int b;
+                if ((b = M[4 * x + j]) != 0) {
+                    cell_t a = perm[4 * j + y];
+                    temp ^= ((a << b) & 0x0F) |
+                        (a >> (4 - b));
+                }
+            }
+            cell[4 * x + y] = temp;
+        }
+    }
+
+    // AddRoundTweakey
+    for (int i = 0; i < 16; i++)
+        cell[i] ^= (tk >> (4 * (15 - i))) & 0xF;
+
+    // ShuffleCells invert
+    for (int i = 0; i < 16; i++)
+        perm[i] = cell[t_inv[i]];
+
+    return cell2text(perm);
+}
+
+uint64_t Qarma64HashFamily::forward(uint64_t is, uint64_t tk, int r) {
+    is ^= tk;
+    cell_t cell[16];
+    text2cell(cell, is);
+
+    if (r != 0) {
+        // ShuffleCells
+        cell_t perm[16];
+        for (int i = 0; i < 16; i++)
+            perm[i] = cell[t[i]];
+
+        // MixColumns
+        for (int x = 0; x < 4; x++) {
+            for (int y = 0; y < 4; y++) {
+                cell_t temp = 0;
+                for (int j = 0; j < 4; j++) {
+                    int b;
+                    if ((b = M[4 * x + j]) != 0) {
+                        cell_t a = perm[4 * j + y];
+                        temp ^= ((a << b) & 0x0F) |
+                            (a >> (4 - b));
+                    }
+                }
+                cell[4 * x + y] = temp;
+            }
+        }
+    }
+
+    // SubCells
+    for (int i = 0; i < 16; i++) {
+        cell[i] = subcells[cell[i]];
+    }
+    is = cell2text(cell);
+
+    return is;
+}
+
+uint64_t Qarma64HashFamily::backward(uint64_t is, uint64_t tk, int r) {
+    cell_t cell[16];
+    text2cell(cell, is);
+
+    // SubCells
+    for (int i = 0; i < 16; i++) {
+        cell[i] = subcells_inv[cell[i]];
+    }
+
+    if (r != 0) {
+        cell_t mixc[16];
+        // MixColumns
+        for (int x = 0; x < 4; x++) {
+            for (int y = 0; y < 4; y++) {
+                cell_t temp = 0;
+                for (int j = 0; j < 4; j++) {
+                    int b;
+                    if ((b = M[4 * x + j]) != 0) {
+                        cell_t a = cell[4 * j + y];
+                        temp ^= ((a << b) & 0x0F) |
+                            (a >> (4 - b));
+                    }
+                }
+                mixc[4 * x + y] = temp;
+            }
+        }
+
+        // ShuffleCells
+        for (int i = 0; i < 16; i++)
+            cell[i] = mixc[t_inv[i]];
+    }
+
+    is = cell2text(cell);
+    is ^= tk;
+
+    return is;
+}
+
+cell_t Qarma64HashFamily::LFSR(cell_t x) {
+    cell_t b0 = (x >> 0) & 1;
+    cell_t b1 = (x >> 1) & 1;
+    cell_t b2 = (x >> 2) & 1;
+    cell_t b3 = (x >> 3) & 1;
+
+    return ((b0 ^ b1) << 3) | (b3 << 2) | (b2 << 1) | (b1 << 0);
+}
+
+cell_t Qarma64HashFamily::LFSR_inv(cell_t x) {
+    cell_t b0 = (x >> 0) & 1;
+    cell_t b1 = (x >> 1) & 1;
+    cell_t b2 = (x >> 2) & 1;
+    cell_t b3 = (x >> 3) & 1;
+
+    return ((b0 ^ b3) << 0) | (b0 << 1) | (b1 << 2) | (b2 << 3);
+}
+
+uint64_t Qarma64HashFamily::forward_update_key(uint64_t T) {
+    cell_t cell[16], temp[16];
+    text2cell(cell, T);
+
+    // h box
+    for (int i = 0; i < 16; i++) {
+        temp[i] = cell[h[i]];
+    }
+
+    // w LFSR
+    temp[0] = LFSR(temp[0]);
+    temp[1] = LFSR(temp[1]);
+    temp[3] = LFSR(temp[3]);
+    temp[4] = LFSR(temp[4]);
+    temp[8] = LFSR(temp[8]);
+    temp[11] = LFSR(temp[11]);
+    temp[13] = LFSR(temp[13]);
+
+    return cell2text(temp);
+}
+
+uint64_t Qarma64HashFamily::backward_update_key(uint64_t T) {
+    cell_t cell[16], temp[16];
+    text2cell(cell, T);
+
+    // w LFSR invert
+    cell[0] = LFSR_inv(cell[0]);
+    cell[1] = LFSR_inv(cell[1]);
+    cell[3] = LFSR_inv(cell[3]);
+    cell[4] = LFSR_inv(cell[4]);
+    cell[8] = LFSR_inv(cell[8]);
+    cell[11] = LFSR_inv(cell[11]);
+    cell[13] = LFSR_inv(cell[13]);
+
+    // h box
+    for (int i = 0; i < 16; i++) {
+        temp[i] = cell[h_inv[i]];
+    }
+
+    return cell2text(temp);
+}
+
+uint64_t Qarma64HashFamily::qarma64_enc(uint64_t plaintext, uint64_t tweak, int rounds) {
+    uint64_t w1 = ((w0 >> 1) | (w0 << (64 - 1))) ^ (w0 >> (16 * m - 1));
+    uint64_t k1 = k0;
+
+    uint64_t is = plaintext ^ w0;
+
+    for (int i = 0; i < rounds; i++) {
+        is = forward(is, k0 ^ tweak ^ c[i], i);
+        tweak = forward_update_key(tweak);
+    }
+
+    is = forward(is, w1 ^ tweak, 1);
+    is = pseudo_reflect(is, k1);
+    is = backward(is, w0 ^ tweak, 1);
+
+    for (int i = rounds - 1; i >= 0; i--) {
+        tweak = backward_update_key(tweak);
+        is = backward(is, k0 ^ tweak ^ c[i] ^ alpha, i);
+    }
+
+    is ^= w1;
+
+    return is;
+}
+
+uint64_t Qarma64HashFamily::qarma64_dec(uint64_t plaintext, uint64_t tweak, int rounds) {
+    uint64_t w1 = w0;
+    w0 = ((w0 >> 1) | (w0 << (64 - 1))) ^ (w0 >> (16 * m - 1));
+
+    cell_t k0_cell[16], k1_cell[16];
+    text2cell(k0_cell, k0);
+    // MixColumns
+    for (int x = 0; x < 4; x++) {
+        for (int y = 0; y < 4; y++) {
+            cell_t temp = 0;
+            for (int j = 0; j < 4; j++) {
+                int b;
+                if ((b = M[4 * x + j]) != 0) {
+                    cell_t a = k0_cell[4 * j + y];
+                    temp ^= ((a << b) & 0x0F) |
+                        (a >> (4 - b));
+                }
+            }
+            k1_cell[4 * x + y] = temp;
+        }
+    }
+    uint64_t k1 = cell2text(k1_cell);
+
+    k0 ^= alpha;
+
+    uint64_t is = plaintext ^ w0;
+
+    for (int i = 0; i < rounds; i++) {
+        is = forward(is, k0 ^ tweak ^ c[i], i);
+        tweak = forward_update_key(tweak);
+    }
+
+    is = forward(is, w1 ^ tweak, 1);
+    is = pseudo_reflect(is, k1);
+    is = backward(is, w0 ^ tweak, 1);
+
+    for (int i = rounds - 1; i >= 0; i--) {
+        tweak = backward_update_key(tweak);
+        is = backward(is, k0 ^ tweak ^ c[i] ^ alpha, i);
+    }
+
+    is ^= w1;
+
+    return is;
+}
+
+uint64_t Qarma64HashFamily::hash(uint32_t id, uint64_t val){
+    // id: wayIdx, val: lineAddr
+    /**
+     * TODO: concatenate SDID (maybe also SecID) with way index as the tweak.
+     */
+
+    /**
+     * SCv1: simply use both tag and index bits as the plaintext, whose output
+     * has potential birthday-bound complexity.
+     */
+    // return qarma64_enc(val, id, NUM_ENC_ROUNDS);
+
+    /**
+     * SCv2: only use index bits as the plaintext, while the tag bits
+     * constitute the tweak in order to mitigate birthday-bound index
+     * collisions.
+     */
+    uint64_t indexBits = (val & setMask);
+    uint64_t tweak = ((val & (~setMask)) | id);
+    return qarma64_enc(indexBits, tweak, NUM_ENC_ROUNDS);
+}
+
 #endif  // _WITH_POLARSSL_

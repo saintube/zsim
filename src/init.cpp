@@ -136,6 +136,10 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
             hf = new H3HashFamily(numHashes, setBits, 0xCAC7EAFFA1 + seed /*make randSeed depend on prefix*/);
         } else if (hashType == "SHA1") {
             hf = new SHA1HashFamily(numHashes);
+        } else if (hashType == "Qarma64") {
+            // Qarma64 is the default cipher for ScatterCache
+            unsigned setMask = numSets - 1;
+            hf = new Qarma64HashFamily(setMask);
         } else {
             panic("%s: Invalid value %s on array.hash", name.c_str(), hashType.c_str());
         }
